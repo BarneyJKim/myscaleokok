@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>나만의 체중계</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 10px; }
+        #weight-display { font-size: 4rem; font-weight: bold; color: #007AFF; margin: 20px 0; }
+        #status { color: #666; margin-bottom: 20px; font-size: 0.9rem; }
+        button { background-color: #007AFF; color: white; border: none; padding: 15px 30px; font-size: 1.2rem; border-radius: 30px; cursor: pointer; transition: background 0.2s; width: 100%; }
+        button:active { background-color: #0056b3; }
+        #log { text-align: left; background: #eee; padding: 10px; border-radius: 5px; margin-top: 20px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>내 체중계 (No Ads)</h1>
+    <div id="status">블루투스 연결 대기 중...</div>
+    
+    <div id="weight-display">-- kg</div>
+    
+    <button id="connectBtn">체중계 연결하기</button>
+
+    <div id="log"></div>
+</div>
+
+<script>
+    const connectBtn = document.getElementById('connectBtn');
+    const statusDiv = document.getElementById('status');
+    const weightDisplay = document.getElementById('weight-display');
+    const logDiv = document.getElementById('log');
+
+    // OKOK 체중계 (Chipsea) 일반적 UUID
+    // 만약 연결이 안 되면 이 부분을 수정해야 할 수 있습니다.
+    const SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
+    const CHAR_UUID    = '0000fff4-0000-1000-8000-00805f9b34fb'; 
+
+    function log(message) {
+        const time = new Date().toLocaleTimeString();
+        logDiv.innerHTML += `[${time}] ${message}<br>`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    async function connectBluetooth() {
+        try {
+            statusDiv.innerText = "장치 검색 중...";
+            
+            // 1. 장치 검색
+            const device = await navigator.bluetooth.requestDevice({
+                // OKOK 체중계는 이름이 다양하므로, 서비스 UUID로 필터링하거나
+                // acceptAllDevices: true를 쓸 수도 있습니다 (단, 서비스 명시 필수).
+                // 여기서는 가장 일반적인 방식을 시도합니다.
+                filters: [{ services: [SERVICE_UUID] }],
+                optionalServices: [SERVICE_UUID]
+            });
+
+            log(`장치 선택됨: ${device.name}`);
+            
+            // 2. GATT 서버 연결
+            const server = await device.gatt.connect();
+            log("GATT 서버 연결 성공");
+
+            // 3. 서비스 가져오기
+            const service = await server.getPrimaryService(SERVICE_UUID);
+            log("서비스 접근 성공");
+
+            // 4. 특성(Characteristic) 가져오기
+            const characteristic = await service.getCharacteristic(CHAR_UUID);
+            
+            // 5. 알림(Notifications) 시작
+            await characteristic.startNotifications();
+            characteristic.addEventListener('characteristicvaluechanged', handleData);
+            
+            statusDiv.innerText = "연결됨! 체중계에 올라가세요.";
+            connectBtn.style.display = 'none'; // 연결 후 버튼 숨김
+
+        } catch (error) {
+            log(`에러 발생: ${error}`);
+            statusDiv.innerText = "연결 실패. 다시 시도해주세요.";
+        }
+    }
+
+    function handleData(event) {
+        const value = event.target.value;
+        // DataView를 사용하여 바이트 데이터 읽기
+        const data = new Uint8Array(value.buffer);
+        
+        // 디버깅을 위해 들어오는 원본 헥사 코드 출력
+        // 예: 12, 4B, 00...
+        let hexString = '';
+        data.forEach(byte => {
+            hexString += byte.toString(16).padStart(2, '0').toUpperCase() + ' ';
+        });
+        log(`수신 데이터: ${hexString}`);
+
+        // --- 데이터 해석 로직 (OKOK / Chipsea 프로토콜 추정) ---
+        // 보통 데이터 길이는 20바이트 내외입니다.
+        // 제조사마다 다르지만 보통 1~2번째 바이트 혹은 3~4번째 바이트가 체중입니다.
+        
+        if (data.length > 0) {
+            // [가설 1] 일반적인 Chipsea 방식: High Byte + Low Byte
+            // 예: 01F4 (hex) = 500 (decimal) -> 50.0kg
+            
+            // 데이터 위치가 다를 수 있으니 여러 곳을 찍어봅니다.
+            // 보통 index 1과 2, 혹은 2와 3에 값이 있습니다.
+            // 여기서는 가장 흔한 패턴인 index 1(High)과 2(Low)를 가정합니다.
+            
+            // 주의: 이 부분은 기기마다 달라서 로그를 보고 수정해야 할 수 있습니다!
+            let rawWeight = (data[1] << 8) + data[2]; 
+            
+            // 10으로 나눌지 100으로 나눌지는 기기마다 다릅니다. (보통 10)
+            let weight = rawWeight / 10; 
+
+            // 값이 너무 비정상적(300kg 초과)이면 다른 바이트를 읽어봄 (예외처리)
+            if(weight > 300 || weight === 0) {
+                 // 다른 위치 시도 (index 2, 3)
+                 rawWeight = (data[2] << 8) + data[3];
+                 weight = rawWeight / 10;
+            }
+
+            weightDisplay.innerText = `${weight.toFixed(1)} kg`;
+        }
+    }
+
+    connectBtn.addEventListener('click', connectBluetooth);
+</script>
+
+</body>
+</html>
