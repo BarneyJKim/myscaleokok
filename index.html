@@ -3,41 +3,47 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>나만의 체중계</title>
+    <title>OKOK 체중계 스캐너</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
         h1 { color: #333; margin-bottom: 10px; }
-        #weight-display { font-size: 4rem; font-weight: bold; color: #007AFF; margin: 20px 0; }
+        #weight-display { font-size: 4rem; font-weight: bold; color: #34C759; margin: 20px 0; }
         #status { color: #666; margin-bottom: 20px; font-size: 0.9rem; }
-        button { background-color: #007AFF; color: white; border: none; padding: 15px 30px; font-size: 1.2rem; border-radius: 30px; cursor: pointer; transition: background 0.2s; width: 100%; }
-        button:active { background-color: #0056b3; }
+        button { background-color: #34C759; color: white; border: none; padding: 15px 30px; font-size: 1.2rem; border-radius: 30px; cursor: pointer; transition: background 0.2s; width: 100%; }
+        button:active { background-color: #28a745; }
         #log { text-align: left; background: #eee; padding: 10px; border-radius: 5px; margin-top: 20px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 0.8rem; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>내 체중계 (No Ads)</h1>
-    <div id="status">블루투스 연결 대기 중...</div>
+    <h1>OKOK 체중계 브로드캐스트 스캐너</h1>
+    <div id="status">연결 버튼을 눌러 주변 기기를 스캔하세요.</div>
     
     <div id="weight-display">-- kg</div>
     
-    <button id="connectBtn">체중계 연결하기</button>
+    <button id="scanBtn">체중계 스캔 시작</button>
 
     <div id="log"></div>
 </div>
 
 <script>
-    const connectBtn = document.getElementById('connectBtn');
+    const scanBtn = document.getElementById('scanBtn');
     const statusDiv = document.getElementById('status');
     const weightDisplay = document.getElementById('weight-display');
     const logDiv = document.getElementById('log');
 
-    // OKOK 체중계 (Chipsea) 일반적 UUID
-    // 만약 연결이 안 되면 이 부분을 수정해야 할 수 있습니다.
-    const SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
-    const CHAR_UUID    = '0000fff4-0000-1000-8000-00805f9b34fb'; 
+    // **사용자 지정 MAC 주소 (주의: Web Bluetooth API는 MAC 주소 필터링을 직접 지원하지 않음)**
+    // Bluefy 브라우저는 MAC 주소로 장치를 식별할 수 있지만, 일반적인 Web Bluetooth API는
+    // 보안상 이를 허용하지 않습니다. Bluefy에서 접속 시 MAC 주소 필터링을 시도하지만,
+    // 작동하지 않으면 아래의 OKOK 특정 ID로 대체합니다.
+
+    // OKOK 체중계의 일반적인 장치 이름 또는 브로드캐스트 데이터의 시작 부분 (MAC 대신)
+    const TARGET_DEVICE_NAME = 'Body Fat Scale'; 
+    
+    // OKOK 체중계 (Chipsea)에서 자주 보이는 서비스 데이터 UUID (Vendor ID)
+    const SERVICE_UUID_16 = 0xFFF0; // 16-bit UUID for Service Data
 
     function log(message) {
         const time = new Date().toLocaleTimeString();
@@ -45,88 +51,112 @@
         logDiv.scrollTop = logDiv.scrollHeight;
     }
 
-    async function connectBluetooth() {
+    // 바이트 배열(Uint8Array)에서 체중을 추출하는 함수
+    function parseWeight(data) {
+        // --- OKOK / Chipsea 브로드캐스트 데이터 해석 로직 ---
+        
+        // 1. 데이터가 체중 데이터 패킷인지 확인 (보통 0xCA로 시작하는 프로토콜)
+        if (data[0] !== 0xCA) {
+            // log("CA로 시작하지 않는 패킷 스킵.");
+            return null; 
+        }
+
+        // 2. 무게 값 추출 (일반적으로 바이트 19와 20에 최종 무게 값이 저장됨)
+        // 이 위치는 제조사/모델에 따라 달라질 수 있습니다.
+        // 여기서는 가장 흔한 패턴인 **index 19 (High Byte)와 20 (Low Byte)**를 가정합니다.
+
+        // (바이트 19 << 8) | 바이트 20 : 16비트 정수로 합치기
+        // JavaScript DataView를 사용하여 Little Endian(LE)으로 읽을 수도 있습니다.
+        const rawWeight = (data[19] << 8) | data[20];
+        
+        // rawWeight는 보통 실제 무게의 100배 또는 10배
+        // 50.0 kg -> 5000 (100배) or 500 (10배)
+        // OKOK 프로토콜은 보통 100배 (소수점 둘째 자리까지 포함)로 전송합니다.
+        let weight = rawWeight / 100;
+        
+        // 3. 체중 값이 정상적인 범위인지 확인 (필터링)
+        // 0kg이나 300kg 초과는 오류 또는 다른 데이터일 가능성 높음
+        if (weight > 0 && weight < 300) {
+            return weight;
+        }
+
+        return null;
+    }
+
+    async function scanBluetooth() {
+        if (!navigator.bluetooth) {
+            statusDiv.innerText = "Web Bluetooth를 지원하지 않는 브라우저입니다. Bluefy 앱을 사용하세요.";
+            return;
+        }
+
         try {
-            statusDiv.innerText = "장치 검색 중...";
-            
-            // 1. 장치 검색
-            const device = await navigator.bluetooth.requestDevice({
-                // OKOK 체중계는 이름이 다양하므로, 서비스 UUID로 필터링하거나
-                // acceptAllDevices: true를 쓸 수도 있습니다 (단, 서비스 명시 필수).
-                // 여기서는 가장 일반적인 방식을 시도합니다.
-                filters: [{ services: [SERVICE_UUID] }],
-                optionalServices: [SERVICE_UUID]
-            });
+            statusDiv.innerText = "체중계 신호 검색 중... 체중계에 올라가세요.";
+            log("스캔 요청 중...");
+            scanBtn.disabled = true;
 
-            log(`장치 선택됨: ${device.name}`);
+            // **주의:** Web Bluetooth 표준은 MAC 주소 필터링을 지원하지 않습니다.
+            // 대신, OKOK 체중계가 브로드캐스트하는 Vendor ID/Service Data를 필터링합니다.
+            const options = {
+                // 이름 필터링 (선택 사항)
+                // filters: [{ name: TARGET_DEVICE_NAME }], 
+                
+                // 브로드캐스트 데이터 전체 접근 권한 요청
+                // Bluefy에서는 이 옵션을 사용하여 모든 브로드캐스트 데이터를 수신합니다.
+                acceptAllDevices: true,
+                optionalServices: [],
+                // vendor-specific service data (OKOK 체중계는 0xFFF0을 자주 사용)
+                optionalManufacturerData: [0x0000] 
+            };
             
-            // 2. GATT 서버 연결
-            const server = await device.gatt.connect();
-            log("GATT 서버 연결 성공");
+            // 1. 장치 검색 및 이벤트 리스너 등록
+            const device = await navigator.bluetooth.requestDevice(options);
+            log(`장치 선택됨: ${device.name} (${device.id})`);
+            
+            // 2. 장치 광고 데이터 이벤트 리스너 (브로드캐스트 데이터 수신)
+            device.addEventListener('advertisementreceived', handleAdvertisement);
 
-            // 3. 서비스 가져오기
-            const service = await server.getPrimaryService(SERVICE_UUID);
-            log("서비스 접근 성공");
-
-            // 4. 특성(Characteristic) 가져오기
-            const characteristic = await service.getCharacteristic(CHAR_UUID);
-            
-            // 5. 알림(Notifications) 시작
-            await characteristic.startNotifications();
-            characteristic.addEventListener('characteristicvaluechanged', handleData);
-            
-            statusDiv.innerText = "연결됨! 체중계에 올라가세요.";
-            connectBtn.style.display = 'none'; // 연결 후 버튼 숨김
+            // 3. 스캔 시작
+            await device.watchAdvertisements();
+            statusDiv.innerText = `스캔 중: ${device.name}. 체중계에 올라가세요.`;
+            log("브로드캐스트 수신 시작.");
 
         } catch (error) {
             log(`에러 발생: ${error}`);
-            statusDiv.innerText = "연결 실패. 다시 시도해주세요.";
+            statusDiv.innerText = "스캔 실패. 콘솔 로그를 확인하거나 Bluefy 앱 권한을 확인하세요.";
+            scanBtn.disabled = false;
         }
     }
 
-    function handleData(event) {
-        const value = event.target.value;
-        // DataView를 사용하여 바이트 데이터 읽기
-        const data = new Uint8Array(value.buffer);
+    function handleAdvertisement(event) {
+        const advertisement = event.advertisement;
         
-        // 디버깅을 위해 들어오는 원본 헥사 코드 출력
-        // 예: 12, 4B, 00...
-        let hexString = '';
-        data.forEach(byte => {
-            hexString += byte.toString(16).padStart(2, '0').toUpperCase() + ' ';
-        });
-        log(`수신 데이터: ${hexString}`);
+        // Bluefy에서는 `event.device.id`를 MAC 주소처럼 사용 가능하지만,
+        // **안전하게 가기 위해** 브로드캐스트 데이터(Service Data) 내에서 체중을 찾습니다.
 
-        // --- 데이터 해석 로직 (OKOK / Chipsea 프로토콜 추정) ---
-        // 보통 데이터 길이는 20바이트 내외입니다.
-        // 제조사마다 다르지만 보통 1~2번째 바이트 혹은 3~4번째 바이트가 체중입니다.
-        
-        if (data.length > 0) {
-            // [가설 1] 일반적인 Chipsea 방식: High Byte + Low Byte
-            // 예: 01F4 (hex) = 500 (decimal) -> 50.0kg
-            
-            // 데이터 위치가 다를 수 있으니 여러 곳을 찍어봅니다.
-            // 보통 index 1과 2, 혹은 2와 3에 값이 있습니다.
-            // 여기서는 가장 흔한 패턴인 index 1(High)과 2(Low)를 가정합니다.
-            
-            // 주의: 이 부분은 기기마다 달라서 로그를 보고 수정해야 할 수 있습니다!
-            let rawWeight = (data[1] << 8) + data[2]; 
-            
-            // 10으로 나눌지 100으로 나눌지는 기기마다 다릅니다. (보통 10)
-            let weight = rawWeight / 10; 
+        // 1. Service Data 찾기 (OKOK 체중계가 데이터를 숨겨서 보내는 방식)
+        if (advertisement.serviceData.has(SERVICE_UUID_16)) {
+            const dataBuffer = advertisement.serviceData.get(SERVICE_UUID_16);
+            const data = new Uint8Array(dataBuffer.buffer);
 
-            // 값이 너무 비정상적(300kg 초과)이면 다른 바이트를 읽어봄 (예외처리)
-            if(weight > 300 || weight === 0) {
-                 // 다른 위치 시도 (index 2, 3)
-                 rawWeight = (data[2] << 8) + data[3];
-                 weight = rawWeight / 10;
+            let hexString = '';
+            data.forEach(byte => {
+                hexString += byte.toString(16).padStart(2, '0') + ' ';
+            });
+            // log(`RAW Data (${SERVICE_UUID_16.toString(16).toUpperCase()}): ${hexString}`);
+
+            const weight = parseWeight(data);
+
+            if (weight !== null) {
+                // 체중계가 최종적으로 값을 고정했을 때
+                weightDisplay.innerText = `${weight.toFixed(1)} kg`;
+                statusDiv.innerText = `마지막 측정: ${new Date().toLocaleTimeString()}`;
+            } else {
+                // log("체중계 데이터가 아님 (CA 프로토콜 아님)");
             }
-
-            weightDisplay.innerText = `${weight.toFixed(1)} kg`;
         }
     }
 
-    connectBtn.addEventListener('click', connectBluetooth);
+    scanBtn.addEventListener('click', scanBluetooth);
 </script>
 
 </body>
