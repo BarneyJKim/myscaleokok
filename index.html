@@ -3,16 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OKOK 체중계 스캐너 (v1.6 - 체중계 전용 로그)</title> 
+    <title>OKOK 체중계 식별 도구 (v1.8 - 자동 재시작)</title> 
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
         h1 { color: #333; margin-bottom: 10px; }
+        #identification-result { font-size: 2rem; font-weight: bold; margin: 15px 0; color: #DC3545; }
         #weight-display { font-size: 4rem; font-weight: bold; color: #34C759; margin: 20px 0; }
         #status { color: #666; margin-bottom: 20px; font-size: 0.9rem; }
-        button { background-color: #34C759; color: white; border: none; padding: 15px 30px; font-size: 1.2rem; border-radius: 30px; cursor: pointer; transition: background 0.2s; width: 100%; }
+        button { background-color: #007AFF; color: white; border: none; padding: 15px 30px; font-size: 1.2rem; border-radius: 30px; cursor: pointer; transition: background 0.2s; width: 100%; }
         #copyBtn { background-color: #FF9500; margin-top: 10px; }
-        button:active { background-color: #28a745; }
+        button:active { background-color: #0056b3; }
         #copyBtn:active { background-color: #e58700; }
         #log { text-align: left; background: #eee; padding: 10px; border-radius: 5px; margin-top: 20px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 0.8rem; }
     </style>
@@ -20,12 +21,13 @@
 <body>
 
 <div class="container">
-    <h1 id="appTitle">OKOK 체중계 스캐너 (v1.6)</h1>
-    <div id="status">버튼을 눌러 기기 선택 후, 체중계에 올라서면 **체중계 신호만** 로그에 기록됩니다.</div>
+    <h1 id="appTitle">체중계 식별 도구 (v1.8)</h1>
+    <div id="status">버튼을 눌러 목록을 띄우고, **이름 없는 기기**를 하나씩 선택해 테스트하세요.</div>
     
+    <div id="identification-result">❌ 식별 테스트 대기 중...</div>
     <div id="weight-display">-- kg</div>
     
-    <button id="scanBtn">스캔 및 체중계 신호 감시 시작</button>
+    <button id="scanBtn">스캔 및 식별 테스트 시작</button>
     <button id="copyBtn" style="display: none;">클립보드에 체중 복사</button>
 
     <div id="log"></div>
@@ -35,16 +37,35 @@
     const scanBtn = document.getElementById('scanBtn');
     const copyBtn = document.getElementById('copyBtn');
     const statusDiv = document.getElementById('status');
+    const resultDiv = document.getElementById('identification-result');
     const weightDisplay = document.getElementById('weight-display');
     const logDiv = document.getElementById('log');
 
     const TARGET_MANUFACTURER_ID = 0x0000; 
     const FIXED_MAC_SEQUENCE = [0x7C, 0x09, 0x61, 0x91, 0x78, 0xF3]; 
+    let lastLogTime = 0;
+    let currentDevice = null;
 
     function log(message) {
         const time = new Date().toLocaleTimeString();
         logDiv.innerHTML += `[${time}] ${message}<br>`;
         logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    // UI를 초기 상태로 리셋하는 함수
+    function resetUI() {
+        scanBtn.disabled = false;
+        statusDiv.innerText = "버튼을 눌러 목록을 띄우고, 이름 없는 기기를 하나씩 선택해 테스트하세요.";
+        resultDiv.innerText = "❌ 식별 테스트 대기 중...";
+        resultDiv.style.color = "#DC3545";
+        weightDisplay.innerText = "-- kg";
+        copyBtn.style.display = 'none';
+        
+        // 이전 장치가 있다면 이벤트 리스너 제거
+        if (currentDevice) {
+            currentDevice.removeEventListener('advertisementreceived', handleAdvertisement);
+            currentDevice = null;
+        }
     }
 
     function isTargetScale(data) {
@@ -87,27 +108,31 @@
     }
     copyBtn.addEventListener('click', copyWeight);
 
-    // --- 광고 수신 핸들러 (체중계 신호만 로그) ---
+    // --- 광고 수신 핸들러 (식별 로직) ---
     function handleAdvertisement(event) {
         const advertisement = event.advertisement;
+        const currentTime = Date.now();
         
-        // 1. 0x0000 키를 통해 모든 Manufacturer Data를 받습니다.
         if (advertisement.manufacturerData.has(TARGET_MANUFACTURER_ID)) {
-            
             const dataBuffer = advertisement.manufacturerData.get(TARGET_MANUFACTURER_ID);
             const data = new Uint8Array(dataBuffer.buffer);
 
-            // 2. MAC 주소 시퀀스가 일치하는 경우에만 로그를 출력하고 처리합니다.
-            if (isTargetScale(data)) {
-                
-                let hexString = '';
-                data.forEach(byte => {
-                    hexString += byte.toString(16).padStart(2, '0').toUpperCase() + ' ';
-                });
-                
-                // **체중계 신호가 잡히는 순간만 로그에 표시**
-                log(`[체중계 신호 포착!] RAW Data: ${hexString}`);
+            // 1초에 한 번만 로그에 출력하여 데이터 변화 확인
+            if (currentTime - lastLogTime > 1000) {
+                 let hexString = '';
+                 data.forEach(byte => {
+                     hexString += byte.toString(16).padStart(2, '0').toUpperCase() + ' ';
+                 });
+                 log(`[신호 감지] RAW Data: ${hexString.trim()}`);
+                 lastLogTime = currentTime;
+            }
 
+            // 2. 체중계 MAC 시퀀스 일치 여부 검사 (핵심 식별)
+            if (isTargetScale(data)) {
+                // --- 식별 성공 시 UI 업데이트 ---
+                resultDiv.innerText = "✅ 식별 성공: 체중계입니다.";
+                resultDiv.style.color = "#34C759"; // 녹색
+                
                 const weight = parseWeight(data);
 
                 if (weight !== null) {
@@ -119,43 +144,53 @@
         }
     }
     
-    // --- 스캔 및 감시 통합 함수 ---
+    // --- 스캔 및 식별 함수 ---
     async function scanBluetooth() {
-        if (!navigator.bluetooth) {
-            statusDiv.innerText = "Web Bluetooth를 지원하지 않는 브라우저입니다. Bluefy 앱을 사용하세요.";
-            return;
-        }
+        // 이미 스캔 중이면 중복 실행 방지
+        if (scanBtn.disabled) return;
+        
+        resetUI(); // 이전 상태 초기화
+        log("------------------------------------------");
+        log("새로운 장치 식별 테스트를 시작합니다.");
 
         try {
-            statusDiv.innerText = "① 장치 목록 로딩 중... 체중계에 올라서세요.";
+            statusDiv.innerText = "① 장치 목록 로딩 중... 체중계에 올라서서 신호가 나오도록 하세요.";
             scanBtn.disabled = true;
 
             const options = {
-                // 모든 장치 강제 노출
                 acceptAllDevices: true, 
                 optionalManufacturerData: [TARGET_MANUFACTURER_ID] 
             };
             
             // 1. 장치 선택 요청
-            const selectedDevice = await navigator.bluetooth.requestDevice(options);
+            currentDevice = await navigator.bluetooth.requestDevice(options);
             
-            log(`장치 선택됨: ${selectedDevice.name || '알 수 없음'} (${selectedDevice.id})`);
+            log(`장치 선택됨: ${currentDevice.name || '알 수 없음'} (${currentDevice.id})`);
             
             // 2. 선택 후 즉시 신호 감시 시작
-            selectedDevice.addEventListener('advertisementreceived', handleAdvertisement);
-            await selectedDevice.watchAdvertisements();
+            currentDevice.addEventListener('advertisementreceived', handleAdvertisement);
             
-            statusDiv.innerText = `② '${selectedDevice.name || '선택된 장치'}'의 신호를 감시 중입니다. 체중계에 올라서세요.`;
-            log("신호 감시 시작. **이제 체중계 신호만** 로그에 표시됩니다.");
+            // 연결 끊김 이벤트 처리 추가: 연결이 끊기면 다시 시도할 수 있도록 버튼 활성화
+            currentDevice.addEventListener('advertisementsstopped', () => {
+                log(`[감시 중단] ${currentDevice.name || '선택된 장치'}의 감시가 중단되었습니다.`);
+                resetUI();
+            });
+
+            await currentDevice.watchAdvertisements();
+            
+            statusDiv.innerText = `② '${currentDevice.name || '선택된 장치'}'의 신호를 감시 중입니다. 체중계인지 확인 중...`;
+            log("신호 감시 시작. RAW 데이터가 1초마다 출력됩니다.");
 
         } catch (error) {
+            // 사용자가 목록에서 취소했을 경우 (NotFoundError)는 흔함
             if (error.name === 'NotFoundError') {
-                statusDiv.innerText = "⚠️ 스캔 목록에 체중계가 뜨지 않았습니다. 체중계에 올라서서 다시 시도하거나, 목록이 비어있는 채로 '취소'를 누르지 마세요.";
+                log("사용자가 장치 선택을 취소했습니다. 다음 후보를 테스트하려면 버튼을 다시 누르세요.");
+                statusDiv.innerText = "⚠️ 선택 취소. 다음 후보를 테스트하려면 버튼을 다시 누르세요.";
             } else {
+                 log(`❌ 치명적 에러 발생: ${error.message}`);
                  statusDiv.innerText = `❌ 에러 발생: ${error.message}. 다시 시도하세요.`;
             }
-            log(`에러 발생: ${error}`);
-            scanBtn.disabled = false;
+            scanBtn.disabled = false; // 에러가 나도 버튼을 다시 활성화하여 재시도 유도
         }
     }
 
