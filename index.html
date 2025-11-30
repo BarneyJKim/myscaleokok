@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OKOK 체중계 스캐너 (v1.3 - 강제 노출)</title> 
+    <title>OKOK 체중계 스캐너 (v1.4 - 단계별 가이드)</title> 
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
@@ -20,12 +20,13 @@
 <body>
 
 <div class="container">
-    <h1 id="appTitle">OKOK 체중계 스캐너 (v1.3)</h1>
-    <div id="status">스캔 시작 후 체중계에 올라서세요.</div>
+    <h1 id="appTitle">OKOK 체중계 스캐너 (v1.4)</h1>
+    <div id="status">① '스캔 시작'을 누른 후, ② 체중계에 올라서서 목록에 기기가 뜨는지 확인하세요.</div>
     
     <div id="weight-display">-- kg</div>
     
-    <button id="scanBtn">체중계 스캔 시작</button>
+    <button id="scanBtn">① 스캔 시작 (기기 목록 띄우기)</button>
+    <button id="watchBtn" style="display: none;">② 신호 감시 시작</button>
     <button id="copyBtn" style="display: none;">클립보드에 체중 복사</button>
 
     <div id="log"></div>
@@ -33,6 +34,7 @@
 
 <script>
     const scanBtn = document.getElementById('scanBtn');
+    const watchBtn = document.getElementById('watchBtn');
     const copyBtn = document.getElementById('copyBtn');
     const statusDiv = document.getElementById('status');
     const weightDisplay = document.getElementById('weight-display');
@@ -40,6 +42,7 @@
 
     const TARGET_MANUFACTURER_ID = 0x0000; 
     const FIXED_MAC_SEQUENCE = [0x7C, 0x09, 0x61, 0x91, 0x78, 0xF3]; 
+    let selectedDevice = null; // 선택된 장치를 저장할 변수
 
     function log(message) {
         const time = new Date().toLocaleTimeString();
@@ -47,12 +50,12 @@
         logDiv.scrollTop = logDiv.scrollHeight;
     }
 
+    /* (isTargetScale 함수, parseWeight 함수, copyWeight 함수는 이전과 동일) */
     function isTargetScale(data) {
         const macLength = FIXED_MAC_SEQUENCE.length;
         if (data.length < macLength) {
             return false;
         }
-        
         for (let i = 0; i < macLength; i++) {
             if (data[data.length - macLength + i] !== FIXED_MAC_SEQUENCE[i]) {
                 return false;
@@ -87,68 +90,96 @@
         });
     }
     copyBtn.addEventListener('click', copyWeight);
+    /* (함수 블록 끝) */
+    
+    // --- 광고 수신 핸들러 ---
+    function handleAdvertisement(event) {
+        const advertisement = event.advertisement;
+        
+        if (advertisement.manufacturerData.has(TARGET_MANUFACTURER_ID)) {
+            const dataBuffer = advertisement.manufacturerData.get(TARGET_MANUFACTURER_ID);
+            const data = new Uint8Array(dataBuffer.buffer);
 
+            if (isTargetScale(data)) {
+                let hexString = '';
+                data.forEach(byte => {
+                    hexString += byte.toString(16).padStart(2, '0').toUpperCase() + ' ';
+                });
+                log(`[체중계 신호 포착] RAW Data: ${hexString}`);
 
-    async function scanBluetooth() {
+                const weight = parseWeight(data);
+
+                if (weight !== null) {
+                    weightDisplay.innerText = `${weight.toFixed(2)} kg`; 
+                    statusDiv.innerText = `✅ 체중 수신 완료 (MAC 확인됨)`;
+                    copyBtn.style.display = 'block'; 
+                }
+            }
+        }
+    }
+    
+    // --- 1단계: 장치 선택 ---
+    async function requestDevice() {
         if (!navigator.bluetooth) {
             statusDiv.innerText = "Web Bluetooth를 지원하지 않는 브라우저입니다. Bluefy 앱을 사용하세요.";
             return;
         }
 
         try {
-            statusDiv.innerText = "체중계 신호 검색 중... 체중계에 올라가세요.";
+            statusDiv.innerText = "① 장치 목록 로딩 중... 체중계에 올라서세요.";
             scanBtn.disabled = true;
 
             const options = {
-                // **모든 장치 강제 노출**
                 acceptAllDevices: true, 
                 optionalManufacturerData: [TARGET_MANUFACTURER_ID] 
             };
             
-            const device = await navigator.bluetooth.requestDevice(options);
-            log(`장치 선택됨: ${device.name || '알 수 없음'} (${device.id})`);
+            // 장치 선택 요청 (Select Device 화면을 띄움)
+            selectedDevice = await navigator.bluetooth.requestDevice(options);
             
-            device.addEventListener('advertisementreceived', handleAdvertisement);
-            await device.watchAdvertisements();
-            statusDiv.innerText = `스캔 중: ${device.name || '선택된 장치'}. 체중계에 올라서세요. (모든 신호 수신 중)`;
+            log(`장치 선택됨: ${selectedDevice.name || '알 수 없음'} (${selectedDevice.id})`);
+            
+            // 2단계 버튼 표시
+            statusDiv.innerText = `② '${selectedDevice.name || '선택된 장치'}'가 선택되었습니다. 신호 감시를 시작하세요.`;
+            watchBtn.style.display = 'block';
+            watchBtn.disabled = false;
 
         } catch (error) {
-            log(`에러 발생: ${error}`);
-            statusDiv.innerText = "스캔 실패. 체중계 활성화(올라서기)를 확인하세요.";
-            scanBtn.disabled = false;
-        }
-    }
-
-    function handleAdvertisement(event) {
-        const advertisement = event.advertisement;
-        
-        // 0x0000 키를 통해 모든 Manufacturer Data를 받습니다.
-        if (advertisement.manufacturerData.has(TARGET_MANUFACTURER_ID)) {
-            
-            const dataBuffer = advertisement.manufacturerData.get(TARGET_MANUFACTURER_ID);
-            const data = new Uint8Array(dataBuffer.buffer);
-
-            // MAC 주소 시퀀스 일치 여부를 검사합니다.
-            if (isTargetScale(data)) {
-                
-                let hexString = '';
-                data.forEach(byte => {
-                    hexString += byte.toString(16).padStart(2, '0').toUpperCase() + ' ';
-                });
-                log(`[체중계 확인됨] RAW Data: ${hexString}`);
-
-                const weight = parseWeight(data);
-
-                if (weight !== null) {
-                    weightDisplay.innerText = `${weight.toFixed(2)} kg`; 
-                    statusDiv.innerText = `측정 완료 (마지막 측정: ${new Date().toLocaleTimeString()})`;
-                    copyBtn.style.display = 'block'; 
-                }
+            if (error.name === 'NotFoundError') {
+                statusDiv.innerText = "⚠️ 스캔 목록에 체중계가 뜨지 않았습니다. 체중계에 올라서서 다시 시도하거나, 목록이 비어있는 채로 '취소'를 누르지 마세요.";
+            } else {
+                 statusDiv.innerText = `❌ 에러 발생: ${error.message}. 다시 시도하세요.`;
             }
+            log(`에러 발생: ${error}`);
+            scanBtn.disabled = false;
+            watchBtn.style.display = 'none';
         }
     }
 
-    scanBtn.addEventListener('click', scanBluetooth);
+    // --- 2단계: 신호 감시 시작 ---
+    async function startWatching() {
+        if (!selectedDevice) {
+            statusDiv.innerText = "오류: 먼저 장치를 선택해 주세요.";
+            return;
+        }
+        
+        try {
+            watchBtn.disabled = true;
+            statusDiv.innerText = `③ '${selectedDevice.name || '선택된 장치'}'의 신호를 감시 중... 체중계에 올라서서 측정을 완료하세요.`;
+            log("신호 감시 (watchAdvertisements) 시작.");
+
+            selectedDevice.addEventListener('advertisementreceived', handleAdvertisement);
+            await selectedDevice.watchAdvertisements();
+            
+        } catch (error) {
+            log(`신호 감시 에러: ${error}`);
+            statusDiv.innerText = "❌ 신호 감시에 실패했습니다. Bluefy 권한을 확인하세요.";
+            watchBtn.disabled = false;
+        }
+    }
+
+    scanBtn.addEventListener('click', requestDevice);
+    watchBtn.addEventListener('click', startWatching);
 </script>
 
 </body>
