@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OKOK 체중계 스캐너 (v1.2 - 최종 이름 필터)</title> 
+    <title>OKOK 체중계 스캐너 (v1.3 - 강제 노출)</title> 
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
@@ -20,7 +20,7 @@
 <body>
 
 <div class="container">
-    <h1 id="appTitle">OKOK 체중계 스캐너 (v1.2)</h1>
+    <h1 id="appTitle">OKOK 체중계 스캐너 (v1.3)</h1>
     <div id="status">스캔 시작 후 체중계에 올라서세요.</div>
     
     <div id="weight-display">-- kg</div>
@@ -37,18 +37,8 @@
     const statusDiv = document.getElementById('status');
     const weightDisplay = document.getElementById('weight-display');
     const logDiv = document.getElementById('log');
-    
-    // **스크립트에서도 버전을 사용할 수 있도록 정의합니다.**
-    const APP_VERSION = "v1.2";
-    
-    // (이전 코드에서 h1 태그를 이미 HTML에서 수정했으므로, 여기는 불필요)
-    // const appTitle = document.getElementById('appTitle');
-    // appTitle.innerText = `OKOK 체중계 스캐너 (${APP_VERSION})`;
 
-    // MAC 시퀀스 검사를 위해 모든 제조사 데이터에 대한 접근을 요청합니다.
     const TARGET_MANUFACTURER_ID = 0x0000; 
-
-    // 체중계의 고정된 MAC 주소 시퀀스 (바이트 배열)
     const FIXED_MAC_SEQUENCE = [0x7C, 0x09, 0x61, 0x91, 0x78, 0xF3]; 
 
     function log(message) {
@@ -57,18 +47,13 @@
         logDiv.scrollTop = logDiv.scrollHeight;
     }
 
-    /**
-     * Manufacturer Data의 끝 6바이트가 고정된 MAC 주소 시퀀스와 일치하는지 확인합니다.
-     */
     function isTargetScale(data) {
         const macLength = FIXED_MAC_SEQUENCE.length;
         if (data.length < macLength) {
             return false;
         }
         
-        // 데이터의 끝 6바이트를 비교
         for (let i = 0; i < macLength; i++) {
-            // data의 끝 (data.length - macLength) + i
             if (data[data.length - macLength + i] !== FIXED_MAC_SEQUENCE[i]) {
                 return false;
             }
@@ -76,19 +61,13 @@
         return true;
     }
 
-    /**
-     * OKOK/Chipsea 브로드캐스트 데이터에서 체중 값을 파싱합니다.
-     */
     function parseWeight(data) {
         const macLength = FIXED_MAC_SEQUENCE.length;
-        // 체중 값 (2바이트) + 고정 MAC (6바이트) + 기타 바이트 (최소 2바이트)
         if (data.length < macLength + 2) return null;
 
-        // 체중 값의 인덱스: 끝에서 8번째 바이트와 7번째 바이트
         const highByteIndex = data.length - macLength - 2;
         const lowByteIndex = data.length - macLength - 1;
 
-        // 확정된 로직: Big Endian으로 읽기
         const rawWeight = (data[highByteIndex] << 8) | data[lowByteIndex]; 
         let weight = rawWeight / 100;
         
@@ -121,14 +100,8 @@
             scanBtn.disabled = true;
 
             const options = {
-                // 모든 Manufacturer Data를 수신하기 위해 가장 포괄적인 이름 필터를 사용
-                filters: [
-                    { name: 'Body Fat Scale' },
-                    { name: 'N/A' }, 
-                    { name: 'Unknown' },
-                    { namePrefix: 'CS' }, 
-                ],
-                // 모든 장치에서 Manufacturer Data에 접근 권한 요청
+                // **모든 장치 강제 노출**
+                acceptAllDevices: true, 
                 optionalManufacturerData: [TARGET_MANUFACTURER_ID] 
             };
             
@@ -149,13 +122,13 @@
     function handleAdvertisement(event) {
         const advertisement = event.advertisement;
         
-        // 1. 모든 Manufacturer Data를 받기 위해 0x0000 키를 확인합니다.
+        // 0x0000 키를 통해 모든 Manufacturer Data를 받습니다.
         if (advertisement.manufacturerData.has(TARGET_MANUFACTURER_ID)) {
             
             const dataBuffer = advertisement.manufacturerData.get(TARGET_MANUFACTURER_ID);
             const data = new Uint8Array(dataBuffer.buffer);
 
-            // 2. MAC 주소 시퀀스 일치 여부를 검사합니다.
+            // MAC 주소 시퀀스 일치 여부를 검사합니다.
             if (isTargetScale(data)) {
                 
                 let hexString = '';
